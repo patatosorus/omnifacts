@@ -6,15 +6,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// A redéfinir par rapport à la norme
-type Manifest struct {
-	ID         uuid.UUID `json:"id" gorm:"primary_key;type:uuid;default:gen_random_uuid()"`
-	Author     *string   `json:"author" gorm:"size 100;"`
-	Layers     []Layer   `json:"layers" gorm:"many2many:manifest_layers;"` // gorm:"foreignKey:LayerRefer"
-	ArtefactID uint      `json:"artefact"`
-	// Gorm auto filled
-	LastDownload time.Time
-	LastUpdated  time.Time
-	UploadedDate time.Time
-	// OwnerID uint    `json:"owner_id" gorm:""`
+// OCIManifest représente un manifeste OCI stocké pour référence
+type OCIManifest struct {
+	ID           uuid.UUID `json:"id" gorm:"primary_key;type:uuid;default:gen_random_uuid()"`
+	Digest       string    `json:"digest" gorm:"size:255;not null;uniqueIndex"`
+	MediaType    string    `json:"media_type" gorm:"size:255;not null"`
+	ArtifactType string    `json:"artifact_type" gorm:"size:255"`
+	Content      []byte    `json:"-" gorm:"type:bytea"`
+	Size         int64     `json:"size"`
+
+	ArtefactID uuid.UUID `json:"artefact_id" gorm:"type:uuid;index"`
+
+	CreatedAt time.Time `json:"created_at"`
 }

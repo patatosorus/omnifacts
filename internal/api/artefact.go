@@ -2,13 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
-	"strconv"
 
-	"omnifacts/internal/models"
 	"omnifacts/internal/service"
 	"omnifacts/internal/utils"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
@@ -20,28 +21,58 @@ func NewArtefactHandler(artefactService service.ArtefactService) *ArtefactHandle
 	return &ArtefactHandler{artefactService: artefactService}
 }
 
-// POST
+// CreateArtefact gère la création d'un artefact dans un dépôt via upload multipart
 func (h *ArtefactHandler) CreateArtefact(w http.ResponseWriter, r *http.Request) {
-	var artefact models.Artefact
+	vars := mux.Vars(r)
+	repoName := vars["repoName"]
 
-	// Décoder le JSON de la requête
-	if err := json.NewDecoder(r.Body).Decode(&artefact); err != nil {
-		utils.WriteError(w, http.StatusBadRequest, "Format JSON invalide")
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Impossible de parser le formulaire multipart")
 		return
 	}
 
-	// Créer la tâche
-	if err := h.artefactService.CreateArtefact(&artefact); err != nil {
-		utils.WriteError(w, http.StatusBadRequest, err.Error())
+	name := r.FormValue("name")
+	if name == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Le nom est requis")
+		return
+	}
+
+	version := r.FormValue("version")
+	if version == "" {
+		version = "latest"
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Le fichier est requis")
+		return
+	}
+	defer file.Close()
+
+	var annotations map[string]string
+	if annotationsJSON := r.FormValue("annotations"); annotationsJSON != "" {
+		if err := json.Unmarshal([]byte(annotationsJSON), &annotations); err != nil {
+			utils.WriteError(w, http.StatusBadRequest, "Format JSON invalide pour les annotations")
+			return
+		}
+	}
+
+	artefact, err := h.artefactService.CreateArtefact(r.Context(), repoName, name, version, file, annotations)
+	if err != nil {
+		slog.Error("Erreur lors de la création de l'artefact", "error", err)
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	utils.WriteSuccess(w, http.StatusCreated, artefact)
 }
 
-// GET
-func (h *ArtefactHandler) GetArtefacts(w http.ResponseWriter, r *http.Request) {
-	artefacts, err := h.artefactService.RetrieveArtefacts()
+// GetRepoArtefacts retourne la liste des artefacts d'un dépôt
+func (h *ArtefactHandler) GetRepoArtefacts(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	repoName := vars["repoName"]
+
+	artefacts, err := h.artefactService.RetrieveArtefactsByRepo(repoName)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -50,35 +81,61 @@ func (h *ArtefactHandler) GetArtefacts(w http.ResponseWriter, r *http.Request) {
 	utils.WriteSuccess(w, http.StatusOK, artefacts)
 }
 
-// Put
-func (h *ArtefactHandler) UpdateArtefact(w http.ResponseWriter, r *http.Request) {
-	var artefact models.Artefact
-	if err := json.NewDecoder(r.Body).Decode(&artefact); err != nil {
-		utils.WriteError(w, http.StatusBadRequest, "Format JSON invalide")
+// GetAllArtefacts retourne tous les artefacts
+func (h *ArtefactHandler) GetAllArtefacts(w http.ResponseWriter, r *http.Request) {
+	artefactType := r.URL.Query().Get("type")
+
+	var err error
+	var artefacts interface{}
+
+	if artefactType != "" {
+		artefacts, err = h.artefactService.RetrieveArtefactsByType(artefactType)
+	} else {
+		artefacts, err = h.artefactService.RetrieveArtefacts()
+	}
+
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	if err := h.artefactService.UpdateArtefact(&artefact); err != nil {
-		utils.WriteError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	utils.WriteSuccess(w, http.StatusOK, map[string]string{"message": "Artefact mis à jour"})
+	utils.WriteSuccess(w, http.StatusOK, artefacts)
 }
 
-// DeleteArtefact supprime une tâche
-func (h *ArtefactHandler) DeleteArtefact(w http.ResponseWriter, r *http.Request) {
+// GetArtefactContent télécharge le contenu binaire d'un artefact
+func (h *ArtefactHandler) GetArtefactContent(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.ParseUint(vars["id"], 10, 32)
+	id, err := uuid.Parse(vars["id"])
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "ID invalide")
 		return
 	}
 
-	if err := h.artefactService.DeleteArtefact(uint(id)); err != nil {
+	content, err := h.artefactService.GetArtefactContent(r.Context(), id)
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, "Artefact non trouvé")
+		return
+	}
+	defer content.Close()
+
+	if _, err := io.Copy(w, content); err != nil {
+		slog.Error("Erreur lors de l'envoi du contenu", "error", err)
+	}
+}
+
+// DeleteArtefact supprime un artefact
+func (h *ArtefactHandler) DeleteArtefact(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := uuid.Parse(vars["id"])
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "ID invalide")
+		return
+	}
+
+	if err := h.artefactService.DeleteArtefact(r.Context(), id); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	utils.WriteSuccess(w, http.StatusOK, map[string]string{"message": "Tâche supprimée"})
+	utils.WriteSuccess(w, http.StatusOK, map[string]string{"message": "Artefact supprimé"})
 }
