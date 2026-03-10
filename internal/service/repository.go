@@ -5,7 +5,7 @@ import (
 
 	"omnifacts/internal/db"
 	"omnifacts/internal/models"
-	"omnifacts/internal/oci"
+	"omnifacts/internal/repotype"
 
 	"github.com/google/uuid"
 )
@@ -28,15 +28,16 @@ type RepositoryService interface {
 type repositoryService struct {
 	repoDB       db.RepositoryDB
 	permissionDB db.PermissionDB
+	registry     *repotype.Registry
 }
 
-func NewRepositoryService(repoDB db.RepositoryDB, permissionDB db.PermissionDB) RepositoryService {
-	return &repositoryService{repoDB: repoDB, permissionDB: permissionDB}
+func NewRepositoryService(repoDB db.RepositoryDB, permissionDB db.PermissionDB, registry *repotype.Registry) RepositoryService {
+	return &repositoryService{repoDB: repoDB, permissionDB: permissionDB, registry: registry}
 }
 
 func (s *repositoryService) Create(name, description, artefactType string, storageMode models.StorageMode, upstreamURL string) (*models.Repository, error) {
-	if _, err := oci.ParseArtefactType(artefactType); err != nil {
-		return nil, fmt.Errorf("type d'artefact invalide : %w", err)
+	if !s.registry.IsRegistered(artefactType) {
+		return nil, fmt.Errorf("type de dépôt '%s' non disponible (plugin non chargé)", artefactType)
 	}
 
 	if storageMode == models.StorageMirror || storageMode == models.StorageRemote {
@@ -77,6 +78,12 @@ func (s *repositoryService) Update(repo *models.Repository) error {
 }
 
 func (s *repositoryService) Delete(id uuid.UUID) error {
+	perms, err := s.permissionDB.ListByRepo(id)
+	if err == nil {
+		for _, p := range perms {
+			_ = s.permissionDB.Delete(p.ID)
+		}
+	}
 	return s.repoDB.Delete(id)
 }
 

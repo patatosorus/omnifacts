@@ -7,7 +7,7 @@ import (
 
 	"omnifacts/internal/db"
 	"omnifacts/internal/models"
-	"omnifacts/internal/oci"
+	"omnifacts/internal/repotype"
 	"omnifacts/internal/storage"
 
 	"github.com/google/uuid"
@@ -29,14 +29,16 @@ type artefactService struct {
 	repoDB     db.RepositoryDB
 	storage    storage.StorageBackend
 	namespace  string
+	registry   *repotype.Registry
 }
 
-func NewArtefactService(artefactDB db.ArtefactDB, repoDB db.RepositoryDB, storage storage.StorageBackend, namespace string) ArtefactService {
+func NewArtefactService(artefactDB db.ArtefactDB, repoDB db.RepositoryDB, storage storage.StorageBackend, namespace string, registry *repotype.Registry) ArtefactService {
 	return &artefactService{
 		artefactDB: artefactDB,
 		repoDB:     repoDB,
 		storage:    storage,
 		namespace:  namespace,
+		registry:   registry,
 	}
 }
 
@@ -46,9 +48,32 @@ func (s *artefactService) CreateArtefact(ctx context.Context, repoName, name, ve
 		return nil, fmt.Errorf("dépôt '%s' non trouvé : %w", repoName, err)
 	}
 
-	typeDesc, err := oci.GetTypeDescriptor(oci.ArtefactType(repo.ArtefactType))
+	plugin, err := s.resolvePlugin(repo.ArtefactType)
 	if err != nil {
-		return nil, fmt.Errorf("type d'artefact invalide : %w", err)
+		return nil, err
+	}
+
+	if !s.registry.IsRegistered(repo.ArtefactType) {
+		return nil, fmt.Errorf("le dépôt '%s' est en lecture seule (plugin '%s' non chargé)", repoName, repo.ArtefactType)
+	}
+
+	typeDesc := plugin.Descriptor()
+
+	pushContent := content
+	if result, err := plugin.BeforePush(ctx, name, version, content, annotations); err != nil {
+		return nil, fmt.Errorf("erreur plugin avant push : %w", err)
+	} else if result != nil {
+		if result.Content != nil {
+			pushContent = result.Content
+		}
+		if result.ExtraAnnotations != nil {
+			if annotations == nil {
+				annotations = make(map[string]string)
+			}
+			for k, v := range result.ExtraAnnotations {
+				annotations[k] = v
+			}
+		}
 	}
 
 	ociRepoName := fmt.Sprintf("%s/%s/%s", s.namespace, repoName, name)
@@ -59,7 +84,7 @@ func (s *artefactService) CreateArtefact(ctx context.Context, repoName, name, ve
 		version,
 		typeDesc.LayerMediaType,
 		typeDesc.ArtifactType,
-		content,
+		pushContent,
 		annotations,
 	)
 	if err != nil {
@@ -107,16 +132,39 @@ func (s *artefactService) GetArtefactContent(ctx context.Context, id uuid.UUID) 
 		return nil, fmt.Errorf("artefact non trouvé : %w", err)
 	}
 
-	var repoPrefix string
+	var repoName string
+	var repoType string
 	if artefact.RepositoryID != nil {
 		repo, err := s.repoDB.FindByID(*artefact.RepositoryID)
 		if err == nil {
-			repoPrefix = repo.Name + "/"
+			repoName = repo.Name
+			repoType = repo.ArtefactType
 		}
 	}
 
+	var repoPrefix string
+	if repoName != "" {
+		repoPrefix = repoName + "/"
+	}
+
 	ociRepoName := fmt.Sprintf("%s/%s%s", s.namespace, repoPrefix, artefact.Name)
-	return s.storage.PullArtefact(ctx, ociRepoName, artefact.Digest)
+	content, err := s.storage.PullArtefact(ctx, ociRepoName, artefact.Digest)
+	if err != nil {
+		return nil, err
+	}
+
+	plugin, resolveErr := s.resolvePlugin(repoType)
+	if resolveErr == nil {
+		if result, err := plugin.AfterPull(ctx, artefact.Name, artefact.Version, content); err != nil {
+			content.Close()
+			return nil, fmt.Errorf("erreur plugin après pull : %w", err)
+		} else if result != nil && result.Content != nil {
+			content.Close()
+			return result.Content, nil
+		}
+	}
+
+	return content, nil
 }
 
 func (s *artefactService) GetArtefactByNameAndVersion(name, version string) (*models.Artefact, error) {
@@ -133,6 +181,13 @@ func (s *artefactService) DeleteArtefact(ctx context.Context, id uuid.UUID) erro
 		return fmt.Errorf("artefact non trouvé : %w", err)
 	}
 
+	if artefact.RepositoryID != nil {
+		repo, err := s.repoDB.FindByID(*artefact.RepositoryID)
+		if err == nil && !s.registry.IsRegistered(repo.ArtefactType) {
+			return fmt.Errorf("le dépôt '%s' est en lecture seule (plugin '%s' non chargé)", repo.Name, repo.ArtefactType)
+		}
+	}
+
 	var repoPrefix string
 	if artefact.RepositoryID != nil {
 		repo, err := s.repoDB.FindByID(*artefact.RepositoryID)
@@ -147,4 +202,12 @@ func (s *artefactService) DeleteArtefact(ctx context.Context, id uuid.UUID) erro
 	}
 
 	return s.artefactDB.Delete(id)
+}
+
+func (s *artefactService) resolvePlugin(artefactType string) (repotype.RepositoryTypePlugin, error) {
+	plugin, err := s.registry.Get(artefactType)
+	if err != nil {
+		return s.registry.GetGeneric(), nil
+	}
+	return plugin, nil
 }
