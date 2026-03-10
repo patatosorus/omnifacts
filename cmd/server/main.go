@@ -9,6 +9,8 @@ import (
 	"omnifacts/internal/api"
 	"omnifacts/internal/config"
 	"omnifacts/internal/db"
+	"omnifacts/internal/repotype"
+	_ "omnifacts/internal/repotype/plugins"
 	"omnifacts/internal/service"
 	"omnifacts/internal/storage"
 	"omnifacts/pkg/database"
@@ -24,19 +26,21 @@ func main() {
 
 	storageBackend := storage.NewORASStorage(cfg.RegistryURL, cfg.RegistryPlainHTTP)
 
-	// Initialiser les couches DB
+	registry := repotype.NewRegistry()
+	if err := repotype.LoadPlugins(registry, cfg.EnabledPlugins); err != nil {
+		log.Fatalf("Impossible de charger les plugins : %v", err)
+	}
+
 	artefactDB := db.NewArtefactDB(database.DB)
 	userDB := db.NewUserDB(database.DB)
 	repoDB := db.NewRepositoryDB(database.DB)
 	permissionDB := db.NewPermissionDB(database.DB)
 	apiKeyDB := db.NewAPIKeyDB(database.DB)
 
-	// Initialiser les services
-	artefactService := service.NewArtefactService(artefactDB, repoDB, storageBackend, cfg.RegistryNamespace)
+	artefactService := service.NewArtefactService(artefactDB, repoDB, storageBackend, cfg.RegistryNamespace, registry)
 	authService := service.NewAuthService(userDB, apiKeyDB)
-	repoService := service.NewRepositoryService(repoDB, permissionDB)
+	repoService := service.NewRepositoryService(repoDB, permissionDB, registry)
 
-	// Configurer les routes
 	router := api.SetupRoutes(
 		api.Services{
 			ArtefactService:   artefactService,
@@ -48,6 +52,7 @@ func main() {
 			RepositoryDB: repoDB,
 			APIKeyDB:     apiKeyDB,
 		},
+		registry,
 	)
 
 	server := &http.Server{

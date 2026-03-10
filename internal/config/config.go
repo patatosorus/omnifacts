@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -15,10 +16,11 @@ type Config struct {
 	DBPassword string
 	DBName     string
 
-	// Configuration du registre OCI (backend de stockage)
-	RegistryURL       string // URL du registre OCI (ex: localhost:5000)
-	RegistryNamespace string // Namespace par défaut pour les artefacts (ex: "omnifacts")
-	RegistryPlainHTTP bool   // Utiliser HTTP au lieu de HTTPS (pour le développement)
+	RegistryURL       string
+	RegistryNamespace string
+	RegistryPlainHTTP bool
+
+	EnabledPlugins []string
 }
 
 func Load() *Config {
@@ -39,6 +41,8 @@ func Load() *Config {
 		RegistryURL:       getEnv("REGISTRY_URL", "localhost:5000"),
 		RegistryNamespace: getEnv("REGISTRY_NAMESPACE", "omnifacts"),
 		RegistryPlainHTTP: getEnv("REGISTRY_PLAIN_HTTP", "true") == "true",
+
+		EnabledPlugins: parsePluginList(getEnv("ENABLED_PLUGINS", "docker,oci,helm,pypi,npm,terraform,maven")),
 	}
 }
 
@@ -47,4 +51,18 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func parsePluginList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var plugins []string
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			plugins = append(plugins, p)
+		}
+	}
+	return plugins
 }

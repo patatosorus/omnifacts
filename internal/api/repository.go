@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"omnifacts/internal/models"
+	"omnifacts/internal/repotype"
 	"omnifacts/internal/service"
 	"omnifacts/internal/utils"
 
@@ -14,27 +15,30 @@ import (
 
 type RepositoryHandler struct {
 	repoService service.RepositoryService
+	registry    *repotype.Registry
 }
 
-func NewRepositoryHandler(repoService service.RepositoryService) *RepositoryHandler {
-	return &RepositoryHandler{repoService: repoService}
+func NewRepositoryHandler(repoService service.RepositoryService, registry *repotype.Registry) *RepositoryHandler {
+	return &RepositoryHandler{repoService: repoService, registry: registry}
 }
 
 func (h *RepositoryHandler) CreateRepository(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	repoType := vars["repoType"]
+
 	var req struct {
-		Name         string             `json:"name"`
-		Description  string             `json:"description"`
-		ArtefactType string             `json:"artefact_type"`
-		StorageMode  models.StorageMode `json:"storage_mode"`
-		UpstreamURL  string             `json:"upstream_url"`
+		Name        string             `json:"name"`
+		Description string             `json:"description"`
+		StorageMode models.StorageMode `json:"storage_mode"`
+		UpstreamURL string             `json:"upstream_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Format JSON invalide")
 		return
 	}
 
-	if req.Name == "" || req.ArtefactType == "" {
-		utils.WriteError(w, http.StatusBadRequest, "Nom et type d'artefact requis")
+	if req.Name == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Nom du dépôt requis")
 		return
 	}
 
@@ -42,13 +46,18 @@ func (h *RepositoryHandler) CreateRepository(w http.ResponseWriter, r *http.Requ
 		req.StorageMode = models.StorageLocal
 	}
 
-	repo, err := h.repoService.Create(req.Name, req.Description, req.ArtefactType, req.StorageMode, req.UpstreamURL)
+	repo, err := h.repoService.Create(req.Name, req.Description, repoType, req.StorageMode, req.UpstreamURL)
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	utils.WriteSuccess(w, http.StatusCreated, repo)
+}
+
+func (h *RepositoryHandler) ListTypes(w http.ResponseWriter, r *http.Request) {
+	types := h.registry.List()
+	utils.WriteSuccess(w, http.StatusOK, types)
 }
 
 func (h *RepositoryHandler) ListRepositories(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +77,12 @@ func (h *RepositoryHandler) GetRepository(w http.ResponseWriter, r *http.Request
 	repo, err := h.repoService.FindByName(name)
 	if err != nil {
 		utils.WriteError(w, http.StatusNotFound, "Dépôt non trouvé")
+		return
+	}
+
+	repoType := vars["repoType"]
+	if repo.ArtefactType != repoType {
+		utils.WriteError(w, http.StatusNotFound, "Dépôt non trouvé pour ce type")
 		return
 	}
 
@@ -97,8 +112,8 @@ func (h *RepositoryHandler) SetPermission(w http.ResponseWriter, r *http.Request
 	repoName := vars["repoName"]
 
 	var req struct {
-		UserID uuid.UUID               `json:"user_id"`
-		Level  models.PermissionLevel  `json:"level"`
+		UserID uuid.UUID              `json:"user_id"`
+		Level  models.PermissionLevel `json:"level"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Format JSON invalide")
