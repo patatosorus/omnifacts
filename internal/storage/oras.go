@@ -67,7 +67,12 @@ func (s *ORASStorage) PushArtefact(ctx context.Context, repoName, tag, layerMedi
 		ManifestAnnotations: annotations,
 	}
 
-	manifestDesc, err := oras.PackManifest(ctx, memStore, oras.PackManifestVersion1_1, artifactType, packOpts)
+	packVersion := oras.PackManifestVersion1_1
+	if artifactType == "" {
+		packVersion = oras.PackManifestVersion1_0
+	}
+
+	manifestDesc, err := oras.PackManifest(ctx, memStore, packVersion, artifactType, packOpts)
 	if err != nil {
 		return "", 0, fmt.Errorf("impossible de créer le manifeste : %w", err)
 	}
@@ -164,5 +169,3 @@ func (s *ORASStorage) ResolveDigest(ctx context.Context, repoName, reference str
 
 	return desc.Digest.String(), nil
 }
-
-
