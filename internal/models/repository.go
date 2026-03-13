@@ -1,47 +1,33 @@
 package models
 
 import (
-	"database/sql/driver"
+	"time"
 
 	"github.com/google/uuid"
 )
 
-type RepositoryType string
+// StorageMode définit le mode de stockage d'un dépôt
+type StorageMode string
 
 const (
-	Generic RepositoryType = "generic"
-	Virtual RepositoryType = "virtual"
+	StorageLocal  StorageMode = "local"  // Stockage dans le registre OCI local (zot)
+	StorageMirror StorageMode = "mirror" // Proxy cache vers un registre distant (pull-through)
+	StorageRemote StorageMode = "remote" // Proxy pur vers un registre distant
 )
 
-// Implémentation de la méthode String() pour afficher la valeur en tant que chaîne de caractères
-func (s RepositoryType) String() string {
-	return string(s)
-}
-
-// Implémentation de la méthode Value() pour GORM
-// Cela permet à GORM de stocker la valeur dans la base de données en tant que type approprié
-func (s RepositoryType) Value() (driver.Value, error) {
-	return string(s), nil
-}
-
-// Implémentation de la méthode Scan() pour GORM
-// Cela permet de récupérer la valeur depuis la base de données sous forme d'énum
-func (s *RepositoryType) Scan(value interface{}) error {
-	*s = RepositoryType(value.(string))
-	return nil
-}
-
+// Repository représente un dépôt logique contenant des artefacts d'un seul type
 type Repository struct {
-	ID              uuid.UUID        `json:"id" gorm:"primary_key;type:uuid;default:gen_random_uuid()"`
-	Name            string           `json:"name" gorm:"size:100;not null"`
-	RepositoryTypes []RepositoryType `json:"repository_type" gorm:"type:repository_type;default:'generic'"`
-}
+	ID           uuid.UUID   `json:"id" gorm:"primary_key;type:uuid;default:gen_random_uuid()"`
+	Name         string      `json:"name" gorm:"size:255;not null;uniqueIndex"`
+	Description  string      `json:"description" gorm:"size:1000"`
+	ArtefactType string      `json:"artefact_type" gorm:"size:50;not null"` // docker, helm, pypi, npm, etc.
+	StorageMode  StorageMode `json:"storage_mode" gorm:"size:20;not null;default:'local'"`
 
-// Déclaration d'un ENUM, a voir si on utilise ça ou pas ?
-// type Repository int
-// const (
-//     Generic ServerState = iota
-//     Docker
-//     Maven
-//     NPM
-// )
+	// Configuration pour mirror/remote
+	UpstreamURL string `json:"upstream_url,omitempty" gorm:"size:500"` // URL du registre upstream (ex: https://registry-1.docker.io)
+
+	Artefacts []Artefact `json:"artefacts,omitempty" gorm:"foreignKey:RepositoryID"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

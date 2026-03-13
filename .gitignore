@@ -33,3 +33,9 @@ go.work.sum
 
 **/*.db
 
+# Build output
+/server
+
+# Runtime data
+data/
+

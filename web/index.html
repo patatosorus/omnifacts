@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omnifacts</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; background-color: #f4f4f9; color: #333; }
+        h1 { color: #333; border-bottom: 2px solid #ddd; padding-bottom: 0.5rem; }
+        .card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 2rem; }
+        form { display: flex; gap: 1rem; align-items: flex-end; }
+        .form-group { display: flex; flex-direction: column; gap: 0.5rem; flex: 1; }
+        label { font-weight: 500; font-size: 0.9rem; }
+        input[type="text"], input[type="file"] { padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; }
+        button { background: #007bff; color: white; border: none; padding: 0.6rem 1.2rem; border-radius: 4px; cursor: pointer; font-weight: 500; }
+        button:hover { background: #0056b3; }
+        ul { list-style: none; padding: 0; }
+        li { background: white; border-bottom: 1px solid #eee; padding: 1rem; display: flex; justify-content: space-between; align-items: center; }
+        li:last-child { border-bottom: none; }
+        .actions { display: flex; gap: 0.5rem; }
+        .btn-download { color: #28a745; text-decoration: none; font-weight: 500; }
+        .btn-delete { color: #dc3545; border: none; background: none; cursor: pointer; font-weight: 500; }
+    </style>
+</head>
+<body>
+    <h1>Omnifacts Registry</h1>
+
+    <div class="card">
+        <h2>Upload Artefact</h2>
+        <form id="uploadForm">
+            <div class="form-group">
+                <label for="name">Name</label>
+                <input type="text" id="name" name="name" required placeholder="e.g. my-app-v1.tar.gz">
+            </div>
+            <div class="form-group">
+                <label for="file">File</label>
+                <input type="file" id="file" name="file" required>
+            </div>
+            <button type="submit">Upload</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h2>Artefacts</h2>
+        <ul id="artefactList">
+            <!-- Items will be injected here -->
+        </ul>
+    </div>
+
+    <script>
+        const API_URL = '/api/artefact';
+
+        async function loadArtefacts() {
+            const res = await fetch(API_URL);
+            const data = await res.json();
+            const list = document.getElementById('artefactList');
+            list.innerHTML = '';
+            
+            if (!data) return;
+
+            data.forEach(item => {
+                const li = document.createElement('li');
+                li.innerHTML = `
+                    <div>
+                        <strong>${item.name}</strong> 
+                        <span style="color:#666; font-size:0.8rem;">(${item.id})</span>
+                    </div>
+                    <div class="actions">
+                        <a href="${API_URL}/${item.id}/content" class="btn-download" target="_blank">Download</a>
+                        <button class="btn-delete" onclick="deleteArtefact('${item.id}')">Delete</button>
+                    </div>
+                `;
+                list.appendChild(li);
+            });
+        }
+
+        async function deleteArtefact(id) {
+            if(!confirm('Are you sure?')) return;
+            await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+            loadArtefacts();
+        }
+
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            
+            const res = await fetch(API_URL, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (res.ok) {
+                e.target.reset();
+                loadArtefacts();
+            } else {
+                alert('Upload failed');
+            }
+        });
+
+        loadArtefacts();
+    </script>
+</body>
+</html>

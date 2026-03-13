@@ -14,14 +14,19 @@ services:
     image: adminer
     container_name: adminer
     environment:
-      - ADMINER_DEFAULT_SERVER=pgsql
+      - ADMINER_DEFAULT_SERVER=postgres
       - ADMINER_DEFAULT_DB_HOST=postgres
       - ADMINER_DESIGN=dracula # Relou ça ne marche pas
     ports:
-      - 8080:8080
+      - 8081:8080
 
   zot:
     image: ghcr.io/project-zot/zot-linux-amd64:latest
     container_name: zot
     ports:
       - 5000:5000
+    volumes:
+      - zot-data:/var/lib/registry
+
+volumes:
+  zot-data:

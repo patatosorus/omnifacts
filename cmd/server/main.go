@@ -9,45 +9,58 @@ import (
 	"omnifacts/internal/api"
 	"omnifacts/internal/config"
 	"omnifacts/internal/db"
+	"omnifacts/internal/repotype"
+	_ "omnifacts/internal/repotype/plugins"
 	"omnifacts/internal/service"
+	"omnifacts/internal/storage"
 	"omnifacts/pkg/database"
 )
-
-// import (
-// 	"log/slog"
-// 	"os"
-// )
-
-// func main() {
-// 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
-
-// 	slog.Info("Hello, on lance le projet ....")
-
-// }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
-	// Charger la configuration
 	cfg := config.Load()
 
-	// Établir la connexion à la base de données
 	database.Connect(cfg)
 	database.Migrate()
 
-	// Initialiser les couches
+	storageBackend := storage.NewORASStorage(cfg.RegistryURL, cfg.RegistryPlainHTTP)
+
+	registry := repotype.NewRegistry()
+	if err := repotype.LoadPlugins(registry, cfg.EnabledPlugins); err != nil {
+		log.Fatalf("Impossible de charger les plugins : %v", err)
+	}
+
 	artefactDB := db.NewArtefactDB(database.DB)
-	artefactService := service.NewArtefactService(artefactDB)
+	userDB := db.NewUserDB(database.DB)
+	repoDB := db.NewRepositoryDB(database.DB)
+	permissionDB := db.NewPermissionDB(database.DB)
+	apiKeyDB := db.NewAPIKeyDB(database.DB)
 
-	// Configurer les routes
-	router := api.SetupRoutes(artefactService)
+	artefactService := service.NewArtefactService(artefactDB, repoDB, storageBackend, cfg.RegistryNamespace, registry)
+	authService := service.NewAuthService(userDB, apiKeyDB)
+	repoService := service.NewRepositoryService(repoDB, permissionDB, registry)
 
-	// Configurer le serveur
+	router := api.SetupRoutes(
+		api.Services{
+			ArtefactService:   artefactService,
+			AuthService:       authService,
+			RepositoryService: repoService,
+		},
+		api.DBs{
+			PermissionDB: permissionDB,
+			RepositoryDB: repoDB,
+			APIKeyDB:     apiKeyDB,
+		},
+		registry,
+	)
+
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
 		Handler: router,
 	}
 
 	log.Printf("Serveur démarré sur le port %s", cfg.Port)
+	log.Printf("Registre OCI : %s (namespace: %s)", cfg.RegistryURL, cfg.RegistryNamespace)
 	log.Fatal(server.ListenAndServe())
 }
