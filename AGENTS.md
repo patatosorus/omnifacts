@@ -94,19 +94,35 @@ omnifacts/
 │   │   ├── repository.go         # Repository (Name, ArtefactType, StorageMode, UpstreamURL)
 │   │   ├── manifest.go           # OCIManifest
 │   │   └── layer.go              # Layer
-│   ├── oci/                      # OCI type registry + mediaType constants
-│   ├── service/                  # Business logic layer
-│   │   ├── artefact.go           # ArtefactService (repo-scoped operations)
-│   │   ├── auth.go               # AuthService (register, login, API keys)
-│   │   └── repository.go         # RepositoryService (CRUD, permissions)
-│   ├── storage/                  # OCI storage backend via ORAS
-│   │   └── oras.go               # StorageBackend implementation → Zot registry
-│   └── utils/                    # Utilities (HTTP responses, helpers)
+│   ├── repotype/                  # Plugin-based repository type system
+│   │   ├── plugin.go              # RepositoryTypePlugin interface + TypeDescriptor
+│   │   ├── registry.go            # Thread-safe plugin registry (generic always built-in)
+│   │   ├── generic.go             # Built-in generic type plugin
+│   │   ├── mediatypes.go          # OCI media type constants
+│   │   ├── loader.go              # Config-driven plugin loading (ENABLED_PLUGINS)
+│   │   └── plugins/               # Built-in plugin implementations
+│   │       ├── docker.go, oci.go, helm.go, pypi.go, npm.go, terraform.go, maven.go
+│   │       └── register.go        # Factory registration via init()
+│   ├── service/                   # Business logic layer
+│   │   ├── artefact.go            # ArtefactService (repo-scoped operations + plugin hooks)
+│   │   ├── auth.go                # AuthService (register, login, API keys)
+│   │   └── repository.go          # RepositoryService (CRUD, permissions, type validation)
+│   ├── storage/                   # OCI storage backend via ORAS
+│   │   └── oras.go                # StorageBackend implementation → Zot registry
+│   └── utils/                     # Utilities (HTTP responses, helpers)
 ├── pkg/                          # Shared packages
 │   └── database/                 # Global DB connection (global variable)
-├── test/                         # Integration tests
+├── test/                         # Integration tests (split by domain)
 │   ├── docker-compose.yaml       # PostgreSQL + Adminer + Zot for testing
-│   └── *_test.go                 # Integration tests (package test)
+│   ├── helpers_test.go           # Shared test setup + utilities
+│   ├── health_test.go            # Health check tests
+│   ├── auth_test.go              # Auth + API key tests
+│   ├── repository_test.go        # Repository CRUD + permission tests
+│   ├── artefact_test.go          # Artefact upload/download/delete tests
+│   └── plugin_test.go            # Plugin system tests
+├── scripts/
+│   └── smoke-test.sh             # Bash smoke test (end-to-end against running server)
+├── Makefile                      # Build, infra, test, and dev targets
 ├── go.mod
 ├── go.sum
 └── .env                          # Local configuration (not committed)
@@ -120,34 +136,42 @@ omnifacts/
 # Install dependencies
 go mod download
 
-# Run the server (requires PostgreSQL + Zot)
-go run cmd/server/main.go
+# Build + run (requires infra)
+make run
 
-# Build binary
-go build -o server cmd/server/main.go
+# Start infra + run server in one shot
+make dev
+
+# Build binary only
+make build
 
 # Static checks (MANDATORY before every commit)
-go vet ./...
-gofmt -l .
+make check   # runs go vet + go fmt
 
-# Run ALL tests (requires PostgreSQL + Zot — see test/docker-compose.yaml)
-go test ./... -count=1
+# Run ALL integration tests (requires infra)
+make test
 
-# Run a single test by name
-go test ./test/ -run TestAuthRegisterAndLogin -v
+# Run tests by domain
+make test-health
+make test-auth
+make test-repo
+make test-artefact
+make test-plugin
 
-# Run tests for a specific package
-go test ./internal/service/ -v
+# Run a single subtest
+go test -count=1 -v -run TestArtefactUploadAndDownload/upload ./test/
 
-# Start test infrastructure (PostgreSQL + Adminer + Zot)
-docker compose -f test/docker-compose.yaml up -d
+# Smoke test (against running server — requires server + infra)
+make smoke
 
-# Stop test infrastructure
-docker compose -f test/docker-compose.yaml down
+# Infrastructure management
+make infra-up       # Start PostgreSQL + Adminer + Zot
+make infra-down     # Stop infra
+make infra-reset    # Wipe volumes + restart
+make infra-status   # Check service health
 
-# Full reset of test environment (removes volumes)
-docker compose -f test/docker-compose.yaml down -v
-docker compose -f test/docker-compose.yaml up -d
+# End-to-end (infra + all tests)
+make e2e
 ```
 
 ---
@@ -193,6 +217,7 @@ curl -s http://localhost:5000/v2/ | grep -q "{}" && echo "OK"
 | `REGISTRY_NAMESPACE`  | `omnifacts`        | OCI namespace in Zot                     |
 | `REGISTRY_PLAIN_HTTP` | `true`             | Required if Zot runs without TLS        |
 | `JWT_SECRET`          | (hardcoded fallback) | Must be secured before any production use |
+| `ENABLED_PLUGINS`     | `docker,oci,helm,pypi,npm,terraform,maven` | Comma-separated list of repo type plugins to load |
 
 ### Test vs Production
 
@@ -236,44 +261,43 @@ curl -s http://localhost:5000/v2/ | grep -q "{}" && echo "OK"
 ### Authenticated
 - `POST /api/auth/apikeys` — Generate API key
 - `GET /api/auth/apikeys` — List API keys
+- `GET /api/repos/types` — List available repository types (loaded plugins)
 - `GET /api/repos` — List repositories
-- `GET /api/repos/{name}` — Get repository details
+- `GET /api/repos/{type}/{name}` — Get repository details
 - `GET /api/artefacts` — List all artefacts (optional `?type=` filter)
 
 ### Admin Only
-- `POST /api/repos` — Create repository
-- `DELETE /api/repos/{name}` — Delete repository
-- `PUT /api/repos/{name}/permissions` — Set user permission on repo
+- `POST /api/repos/{type}` — Create repository
+- `DELETE /api/repos/{type}/{name}` — Delete repository
+- `PUT /api/repos/{type}/{name}/permissions` — Set user permission on repo
 
 ### Repo-Scoped (RBAC)
-- `GET /api/repos/{name}/artefacts` — List artefacts (requires `read`)
-- `GET /api/repos/{name}/artefacts/{id}/content` — Download (requires `read`)
-- `POST /api/repos/{name}/artefacts` — Upload (requires `write`)
-- `DELETE /api/repos/{name}/artefacts/{id}` — Delete (requires `write`)
+- `GET /api/repos/{type}/{name}/artefacts` — List artefacts (requires `read`)
+- `GET /api/repos/{type}/{name}/artefacts/{id}/content` — Download (requires `read`)
+- `POST /api/repos/{type}/{name}/artefacts` — Upload (requires `write`)
+- `DELETE /api/repos/{type}/{name}/artefacts/{id}` — Delete (requires `write`)
 
 ### Example Payloads
 
 ```bash
 # Create a repository (admin)
-curl -X POST http://localhost:8080/api/repos \
+curl -X POST http://localhost:8080/api/repos/docker \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-docker-repo",
-    "artefact_type": "docker",
     "storage_mode": "local"
   }'
 
 # Upload an artefact
-curl -X POST http://localhost:8080/api/repos/my-docker-repo/artefacts \
+curl -X POST http://localhost:8080/api/repos/docker/my-docker-repo/artefacts \
   -H "Authorization: Bearer <token>" \
   -F "file=@myapp-1.0.tar.gz" \
   -F "name=myapp" \
-  -F "version=1.0" \
-  -F "type=docker"
+  -F "version=1.0"
 
 # Set a permission
-curl -X PUT http://localhost:8080/api/repos/my-docker-repo/permissions \
+curl -X PUT http://localhost:8080/api/repos/docker/my-docker-repo/permissions \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -294,7 +318,7 @@ Each repository has:
   - `remote`: proxy to upstream (planned Phase 2)
 - **UpstreamURL**: required for mirror/remote modes
 
-Artefacts are pushed to repos: `POST /api/repos/{repoName}/artefacts`
+Artefacts are pushed to repos: `POST /api/repos/{type}/{name}/artefacts`
 
 ---
 
@@ -323,11 +347,11 @@ Group in this order, separated by blank lines:
 
 ### Logging
 - Use `log/slog` with JSON handler
-- All log messages in French
+- All log messages in English
 - Include relevant context fields (user ID, repo name, artefact ID)
 
 ### Language Rule
-> **All human-readable text in the codebase (comments, logs, error messages, commit messages) MUST be in French.**
+> **All human-readable text in the codebase (comments, logs, error messages, commit messages) MUST be in English.**
 > Code identifiers (function names, variable names, types) remain in English.
 
 ---
@@ -350,9 +374,10 @@ Follow this exact order:
 
 ### Adding a New Artefact Type
 
-1. Add the type and mediaType mapping in `internal/oci/`
-2. Add the type constant in the Repository model if needed
-3. No handler changes required — types are resolved dynamically
+1. Create a new plugin file in `internal/repotype/plugins/` implementing `RepositoryTypePlugin`
+2. Register the factory in `internal/repotype/plugins/register.go`
+3. Add the plugin name to the default `ENABLED_PLUGINS` in `internal/config/config.go`
+4. No handler changes required — types are resolved dynamically via the registry
 
 ---
 
@@ -453,8 +478,8 @@ Before marking a PR as ready:
 - [ ] `go vet ./...` passes with no warnings
 - [ ] `gofmt -l .` returns no files
 - [ ] `go test ./... -count=1` passes (test infra must be running)
-- [ ] All comments and logs are in French
-- [ ] Commit messages follow Conventional Commits format (in French)
+- [ ] All comments and logs are in English
+- [ ] Commit messages follow Conventional Commits format (in English)
 - [ ] No new dependency added without justification in PR description
 - [ ] No modification to existing interfaces without human approval
 - [ ] Integration test added for any new endpoint or auth change
@@ -469,7 +494,6 @@ Before marking a PR as ready:
 |---------------------------------------|----------------------------------------------|
 | Global DB variable (`pkg/database.DB`)| Phase 1 simplicity                           |
 | GORM AutoMigrate at startup           | No separate SQL migration files              |
-| No Makefile                           | Not yet needed                               |
 | No DI framework                       | Manual wiring in `main.go` is sufficient     |
 | `gorilla/mux` (archived)              | Stable, sufficient for current needs         |
 
